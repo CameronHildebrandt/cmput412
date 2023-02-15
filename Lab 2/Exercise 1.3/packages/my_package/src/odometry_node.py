@@ -23,6 +23,7 @@ class OdometryNode(DTROS):
 
         #set extra variables
         self.radius = 0.0318
+        self.length = 0.05
         self.total_ticks = 135
         self.robot_frame_x = 0
         self.robot_frame_y = 0
@@ -37,12 +38,24 @@ class OdometryNode(DTROS):
         self.current_left_ticks = 0
         self.current_right_ticks = 0
 
+        self.trim = -0.02 # more positive = more right, (-1 to +1)
+
         # #list of tasks to preform
         # self.tasks = [self.moveDistance(1.5,0.5),self.moveDistance(1.5,-0.5)]
 
         #these are kinda hacky. it is so the initial tick values are only set once in the callback
         self.left_been_called_back = False
         self.right_been_called_back = False
+
+        self.firstDistanceCompleted = False
+        self.secondDistanceCompleted = False
+        self.firstRotationCompleted = False
+        self.stageFirstVisitFlags = [True, True, True]
+        self.turningOvershootCorrection = -17
+
+
+        self.stageFirstVisitCount = [0, 0, 0]
+        self.waitTimeBetweenStages = 20
 
 
         # Subscribing to the wheel encoders
@@ -113,15 +126,42 @@ class OdometryNode(DTROS):
         # msg_wheels_cmd.vel_left = 0
         # self.pub_velocity.publish(msg_wheels_cmd)
 
-        firstDistance = False
-        secondDistance = False
+        # firstDistanceCompleted = False
+        # secondDistanceCompleted = False
+
+        # self.stop()
         
-        if (firstDistance == False):
-            firstDistance = self.moveDistance(1.5,0.5)
-        elif (secondDistance == False):
-            self.initial_avg_ticks = 0
-            secondDistance = self.moveDistance(1.5,-0.5)
+        if (self.firstDistanceCompleted == False):
+            # print("inFirst")
+            if(self.stageFirstVisitCount[0] < self.waitTimeBetweenStages):
+                self.initial_avg_ticks = (self.current_left_ticks + self.current_right_ticks)/2
+
+            if(self.stageFirstVisitCount[0] > self.waitTimeBetweenStages):
+                self.firstDistanceCompleted = self.moveDistance(1.25,0.5)
+
+            self.stageFirstVisitCount[0] += 1
+
+        elif (self.secondDistanceCompleted == False):
+            # print("inSecond")
+            if(self.stageFirstVisitCount[1] < self.waitTimeBetweenStages):
+                self.initial_avg_ticks = (self.current_left_ticks + self.current_right_ticks)/2
+
+            if(self.stageFirstVisitCount[1] > self.waitTimeBetweenStages):
+                self.secondDistanceCompleted = self.moveDistance(1.25,-0.5)
+
+            self.stageFirstVisitCount[1] += 1
         
+
+        elif(self.firstRotationCompleted == False):
+            if(self.stageFirstVisitCount[2] < self.waitTimeBetweenStages):
+                # self.initial_avg_ticks = (self.current_left_ticks + self.current_right_ticks)/2
+                self.initial_left_ticks = self.current_left_ticks # need to reset for turn
+                self.initial_right_ticks = self.current_right_ticks
+
+            if(self.stageFirstVisitCount[2] > self.waitTimeBetweenStages):
+                self.firstRotationCompleted = self.rotateDegree(math.pi * 0.5, 0.25)
+
+            self.stageFirstVisitCount[2] += 1
 
     '''
     stops the bot from moving
@@ -145,13 +185,72 @@ class OdometryNode(DTROS):
         currAvgTicks = (self.current_left_ticks + self.current_right_ticks)/2
 
         #assign equal wheel velocity, determine if positive or negative
-        self.left_wheel_vel = vel
-        self.right_wheel_vel = vel
+        self.left_wheel_vel = vel + self.trim # doesn't consider when trim sets wheel vel > 1 todo update
+        self.right_wheel_vel = vel - self.trim
 
-        if((currAvgTicks - self.initial_avg_ticks) < numTicks):
-            #update the currAvgTicks
-            currAvgTicks = (self.current_left_ticks + self.current_right_ticks)/2
-            rospy.loginfo(f"currAvgTicks: {currAvgTicks}  initAvgTicks: {self.initial_avg_ticks}  numTicks: {numTicks}")
+        isGoodToMove = abs(currAvgTicks - self.initial_avg_ticks) < numTicks # need to invert somehow if vel < 0
+
+        rospy.loginfo(f"currAvgTicks: {currAvgTicks}  initAvgTicks: {self.initial_avg_ticks}  diff: {currAvgTicks - self.initial_avg_ticks} numTicks: {numTicks} move?: {isGoodToMove}")
+
+        if(isGoodToMove):
+            # #update the currAvgTicks
+            # currAvgTicks = (self.current_left_ticks + self.current_right_ticks)/2
+            return False
+        else:
+            self.stop()
+            return True
+
+
+    # theta in radians
+    def rotateDegree(self, deltaTheta, vel):
+
+        # if given negative theta, cast to positive and swap velocity
+        if(deltaTheta < 0):
+            deltaTheta = -1 * deltaTheta
+            vel = -1 * vel
+
+        #get the required number of ticks to turn deltaTheta in rotation
+        # right = self.radius * vel
+        # left = self.radius * -1 * vel
+        # degTurned = (right - left) / (2 * self.length)
+
+        # deltaTheta
+
+        wheelTravelDistanceInMetersToTurnThetaRadians = deltaTheta * self.length
+        numTicks = (wheelTravelDistanceInMetersToTurnThetaRadians * self.total_ticks) / (2 * math.pi * self.radius)
+        numTicks += self.turningOvershootCorrection
+
+
+        # check - this function should produce no forward/backward motion in the robot frame
+        # if(right + left != 0): # x = (r+l)/2, /2 not necessary for check
+        #     print("Some error has occured")
+
+        #now get the current avg ticks
+        # currAvgTicks = (abs(self.current_left_ticks) + abs(self.current_right_ticks))
+        # currAvgTicks = 0
+        # if(vel > 0): # rotating right
+        #     currAvgTicks = (self.current_left_ticks - self.current_right_ticks)
+        # else: # rotating left
+        #     currAvgTicks = (self.current_right_ticks - self.current_left_ticks)
+
+        #assign equal wheel velocity, determine if positive or negative
+        #TODO: fix trim
+        self.left_wheel_vel = (vel + self.trim) # doesn't consider when trim sets wheel vel > 1 TODO update
+        self.right_wheel_vel = -1 * (vel - self.trim) # * -1 so that right wheel spins opposite
+
+        # if(self.initial_avg_ticks > 0 and vel < 0):
+        #     print("SWAPPING")
+        #     currAvgTicks = currAvgTicks * -1 # if we are moving backwards, the ticks will be negative. Swap so we can terminate properly
+        # We are just going to pay attention to a single wheel for finding cutoff
+        leftDiff = abs(self.current_left_ticks - self.initial_left_ticks)
+        rightDiff = abs(self.current_right_ticks - self.initial_right_ticks)
+        isGoodToMove = (leftDiff + rightDiff)/2 < numTicks
+
+        rospy.loginfo(f"cL: {self.current_left_ticks} initL: {self.initial_left_ticks} diffL: {self.current_left_ticks - self.initial_left_ticks} | cR: {self.current_right_ticks} initR: {self.initial_right_ticks} diffR: {self.current_right_ticks - self.initial_right_ticks} | ave: {(leftDiff + rightDiff)/2} numTicks: {numTicks} move?: {isGoodToMove}")
+
+        if(isGoodToMove):
+            # #update the currAvgTicks
+            # currAvgTicks = (self.current_left_ticks + self.current_right_ticks)/2
             return False
         else:
             self.stop()

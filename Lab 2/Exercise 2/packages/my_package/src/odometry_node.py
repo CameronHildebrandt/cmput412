@@ -11,6 +11,7 @@ from duckietown.dtros.utils import apply_namespace
 from std_msgs.msg import String
 from std_msgs.msg import ColorRGBA
 import rosbag
+from pathlib import Path
 
 
 class OdometryNode(DTROS):
@@ -100,7 +101,11 @@ class OdometryNode(DTROS):
         self.pub_velocity = rospy.Publisher("wheels_driver_node/wheels_cmd", WheelsCmdStamped)
         self.pub_led = rospy.Publisher("/" + os.environ['VEHICLE_NAME'] + "/led_emitter_node/led_pattern", LEDPattern, queue_size=10)
 
-        self.bag = rosbag.Bag('coordinate.bag', 'w')
+        bag_filename = f'/data/bags/odometry.bag'
+        Path(bag_filename).parent.mkdir(parents=True, exist_ok=True)
+        self.bag = rosbag.Bag(bag_filename, 'w')
+        self.bag_closed = False
+
 
 
         self.log("Initialized")
@@ -181,8 +186,6 @@ class OdometryNode(DTROS):
             self.robot_frame_theta = 0
         # circle doesn't work
         ## I couldn't get theta tracking to work - hardcode it
-
-
 
 
 
@@ -331,12 +334,13 @@ class OdometryNode(DTROS):
                 self.publishLEDs(0.0, 0.0, 0.0)
                 self.actionComplete[22] = True
         ### Fourth State: Clockwise circle ###
-
+        
 
         if(all(completed for completed in self.actionComplete)):
             print("All Done. Shutting Down.")
             time.sleep(2) # if we shutdown too fast the other processes do not terminate properly.
             self.bag.close()
+            print("bag saved")
             rospy.signal_shutdown("Task completed.")
 
 
